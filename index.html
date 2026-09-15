@@ -133,10 +133,12 @@
       <p>Pixel words fall from the sky. <b style="color:var(--text)">Type each word exactly</b> before it hits the floor. Speed ramps up every level. One wrong letter and the word turns red — finish it to save it, or lose a life when it lands.</p>
       <div class="help">
         <span><kbd>letters</kbd> type the word</span>
+        <span><kbd>⌫</kbd> backspace</span>
+        <span><kbd>P</kbd> pause</span>
         <span><kbd>space</kbd> start / restart</span>
       </div>
       <div class="row">
-        <button class="btn" id="startBtn">Start Sprint</button>
+        <button class="btn" id="startBtn">▶ Play</button>
       </div>
     </div>
 
@@ -146,8 +148,17 @@
       <div class="sub">WPM · <b id="finalAcc">0%</b> accuracy · <b id="finalScore">0</b> pts</div>
       <div class="newbest hidden" id="newBest">★ NEW BEST ★</div>
       <div class="row">
-        <button class="btn" id="againBtn">Run It Back</button>
+        <button class="btn" id="againBtn">▶ Play Again</button>
         <button class="btn ghost" id="menuBtn">Menu</button>
+      </div>
+    </div>
+
+    <div class="overlay hidden" id="pauseOverlay">
+      <h2>Paused</h2>
+      <p>Take a breather. Your words are frozen in mid-air.</p>
+      <div class="row">
+        <button class="btn" id="resumeBtn">▶ Resume</button>
+        <button class="btn ghost" id="pauseMenuBtn">Menu</button>
       </div>
     </div>
   </div>
@@ -252,6 +263,30 @@
   var particles = [];
   var shake = 0;
   var best = { wpm: 0, acc: 0 };
+  var paused = false;
+
+  // ---------- WebAudio cues (no files) ----------
+  var AC = null;
+  function audio(){
+    if(!AC){ try{ AC = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){} }
+    if(AC && AC.state === "suspended"){ AC.resume(); }
+    return AC;
+  }
+  function tone(freq, dur, type, vol, when){
+    var ac = audio(); if(!ac) return;
+    var t0 = ac.currentTime + (when || 0);
+    var o = ac.createOscillator(), g = ac.createGain();
+    o.type = type || "square";
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(vol || 0.06, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+  function sfxSave(){ tone(660, .07, "square", .05); tone(880, .09, "square", .05, .06); }
+  function sfxWrong(){ tone(160, .12, "sawtooth", .05); }
+  function sfxLose(){ tone(120, .25, "sawtooth", .07); tone(80, .3, "sawtooth", .06, .12); }
+  function sfxStart(){ tone(440, .06, "square", .04); tone(660, .06, "square", .04, .07); tone(880, .08, "square", .04, .14); }
 
   try {
     var b = JSON.parse(localStorage.getItem("launchtower_typing_sprint_best") || "null");
@@ -350,6 +385,7 @@
             score += pts;
             burst(w.x + w.w/2, w.y + w.h/2, "#7ee787", 14);
             scorePop(w.x + w.w/2, w.y, "+"+pts);
+            sfxSave();
           }
           return;
         }
@@ -357,6 +393,7 @@
       // no word matched -> wrong char
       wrongChars++;
       combo = 0;
+      sfxWrong();
       // mark the topmost incomplete word as "wrong" briefly
       for(var m=0;m<words.length;m++){
         if(!words[m].done){ words[m].correct = false; words[m].flash = 0.25; break; }
@@ -370,8 +407,22 @@
     pops.push({x:x,y:y,text:text,t:0,life:0.9});
   }
 
+  function setPaused(p){
+    if(state !== "playing") return;
+    paused = p;
+    document.getElementById("pauseOverlay").classList.toggle("hidden", !p);
+    showMobileKb(true);
+    if(!p) lastTime = performance.now();
+  }
+
   document.addEventListener("keydown", function(e){
     if(state === "playing"){
+      if(e.key === "p" || e.key === "P" || e.key === "Escape"){
+        e.preventDefault();
+        setPaused(!paused);
+        return;
+      }
+      if(paused) return;
       if(e.key.length === 1 || e.key === "Backspace"){ e.preventDefault(); handleKey(e); }
       return;
     }
@@ -380,6 +431,11 @@
       if(state === "menu") startGame();
       else if(state === "over") startGame();
     }
+  });
+
+  // auto-pause when the tab is hidden
+  document.addEventListener("visibilitychange", function(){
+    if(document.hidden && state === "playing" && !paused) setPaused(true);
   });
 
   // mobile: on-screen keyboard (letters)
@@ -409,7 +465,7 @@
 
   function showMobileKb(show){
     if(window.matchMedia("(pointer:coarse)").matches){
-      mkWrap.style.display = show ? "flex" : "none";
+      mkWrap.style.display = (show && state === "playing" && !paused) ? "flex" : "none";
     }
   }
 
@@ -422,14 +478,19 @@
     lives = 3; level = 1; elapsed = 0;
     spawnTimer = 0.6;
     state = "playing";
+    paused = false;
+    sfxStart();
     document.getElementById("startOverlay").classList.add("hidden");
     document.getElementById("endOverlay").classList.add("hidden");
+    document.getElementById("pauseOverlay").classList.add("hidden");
     showMobileKb(true);
     lastTime = performance.now();
   }
 
   function endGame(){
     state = "over";
+    paused = false;
+    document.getElementById("pauseOverlay").classList.add("hidden");
     showMobileKb(false);
     var w = wpmNow(), a = accNow();
     document.getElementById("finalWpm").textContent = w;
@@ -457,14 +518,24 @@
   document.getElementById("againBtn").addEventListener("click", startGame);
   document.getElementById("menuBtn").addEventListener("click", function(){
     state = "menu";
+    paused = false;
     document.getElementById("endOverlay").classList.add("hidden");
+    document.getElementById("pauseOverlay").classList.add("hidden");
+    document.getElementById("startOverlay").classList.remove("hidden");
+    showMobileKb(false);
+  });
+  document.getElementById("resumeBtn").addEventListener("click", function(){ setPaused(false); });
+  document.getElementById("pauseMenuBtn").addEventListener("click", function(){
+    state = "menu";
+    paused = false;
+    document.getElementById("pauseOverlay").classList.add("hidden");
     document.getElementById("startOverlay").classList.remove("hidden");
     showMobileKb(false);
   });
 
   // ---------- update ----------
   function update(dt){
-    if(state !== "playing") return;
+    if(state !== "playing" || paused) return;
     elapsed += dt;
     level = currentLevel();
 
@@ -496,6 +567,7 @@
         combo = 0;
         shake = 8;
         burst(w.x + w.w/2, FLOOR, "#ff7b72", 18);
+        sfxLose();
         if(lives <= 0){ endGame(); return; }
       }
     }
@@ -650,7 +722,7 @@
   function frame(now){
     var dt = Math.min(0.05, (now - lastTime)/1000);
     lastTime = now;
-    update(dt);
+    if(!paused) update(dt);
     draw();
     requestAnimationFrame(frame);
   }
